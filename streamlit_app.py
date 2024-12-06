@@ -19,20 +19,29 @@ from scipy.stats import zscore
 
 # Charger les données
 @st.cache_data
-def load_data():
-    return pd.read_csv("/content/drive/MyDrive/groupeDeTravail-BDAenergie/eco2mix-regional-cons-defcopiecopy.csv", sep=";")
-
-data = load_data()
-
-  
-def download_region_geojson():
-    url = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/regions-version-simplifiee.geojson"
+def load_data(lien_data, lien_geo): #création de la fonction avec 2 entrées qui sont 2 liens/url
+    #création du 1er dataframe 
+    data = pd.read_csv(lien_data, sep=";") 
+    
+    #création du 2eme dataframe 
+    url = lien_geo
     response = requests.get(url)
     temp_dir = tempfile.gettempdir()
     temp_file = os.path.join(temp_dir, "regions.geojson")
     with open(temp_file, 'wb') as f:
         f.write(response.content)
-    return temp_file
+    
+    #résultat de la fonction = 2 df. 
+    return data, temp_file 
+
+# Utilisation de la fonction    
+url_data = "https://drive.google.com/file/d/1gZ1dkFXOBfK6gk9LBanu1qYCQkcLTQKp/view?usp=sharing"
+url_geo = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/regions-version-simplifiee.geojson"
+
+data, geo = load_data(url_data, url_geo) 
+# éxécution de la fonction avec les 2 liens ci-dessus. La fonction va retourner 2 df appelés data et geo.
+# 1er df data = données du dataset
+# 2nd daf geo = données geographiques
 
 # Fonction pour vérifier les colonnes
 def validate_columns(data, required_columns):
