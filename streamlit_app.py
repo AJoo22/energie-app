@@ -1,4 +1,3 @@
-### final code
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,31 +18,24 @@ from scipy.stats import zscore
 
 # Charger les données
 @st.cache_data
-def load_data(lien_data, lien_geo): #création de la fonction avec 2 entrées qui sont 2 liens/url
-    #création du 1er dataframe 
-    data = pd.read_csv(lien_data, sep=";") 
+def load_data(lien_data, lien_geo):
+    data = pd.read_csv(lien_data, sep=";")
     
-    #création du 2eme dataframe 
-    url = lien_geo
-    response = requests.get(url)
+    response = requests.get(lien_geo)
     temp_dir = tempfile.gettempdir()
     temp_file = os.path.join(temp_dir, "regions.geojson")
     with open(temp_file, 'wb') as f:
         f.write(response.content)
     
-    #résultat de la fonction = 2 df. 
     return data, temp_file 
 
-# Utilisation de la fonction    
-url_data = "https://drive.google.com/file/d/1gZ1dkFXOBfK6gk9LBanu1qYCQkcLTQKp/view?usp=sharing"
+# Charger les liens
+url_data = "/content/drive/MyDrive/groupeDeTravail-BDAenergie/eco2mix-regional-cons-defcopiecopy.csv"
 url_geo = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/regions-version-simplifiee.geojson"
 
-data, geo = load_data(url_data, url_geo) 
-# éxécution de la fonction avec les 2 liens ci-dessus. La fonction va retourner 2 df appelés data et geo.
-# 1er df data = données du dataset
-# 2nd daf geo = données geographiques
+data, geo = load_data(url_data, url_geo)
 
-# Fonction pour vérifier les colonnes
+# Fonction pour valider les colonnes
 def validate_columns(data, required_columns):
     missing_cols = [col for col in required_columns if col not in data.columns]
     if missing_cols:
@@ -55,36 +47,26 @@ def create_energy_production_map(data):
                    'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
                    'Bioénergies (MW)']
 
-    # Valider les colonnes nécessaires
     validate_columns(data, energy_cols + ['Région'])
 
-    # Conversion en numérique et gestion des valeurs manquantes
     for col in energy_cols:
         data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
 
-    # Calcul des productions totales et renouvelables
     data['Production (MW)'] = data[energy_cols].sum(axis=1)
     renewable_cols = ['Eolien (MW)', 'Solaire (MW)', 'Hydraulique (MW)', 'Bioénergies (MW)']
     data['Renouvelable (MW)'] = data[renewable_cols].sum(axis=1)
 
-    # Agrégation par région
     production_by_region = data.groupby('Région')[['Production (MW)', 'Renouvelable (MW)']].sum()
     production_by_region['Pourcentage Renouvelable'] = (
         production_by_region['Renouvelable (MW)'] / production_by_region['Production (MW)'].replace(0, 1) * 100
     )
 
-    # Charger les données géographiques
-    regions_file = download_region_geojson()
-    regions_gdata = gpd.read_file(regions_file)
-
-    # Normalisation des noms de régions
+    regions_gdata = gpd.read_file(geo)
     regions_gdata['nom'] = regions_gdata['nom'].str.upper().apply(lambda x: unidecode.unidecode(x))
     production_by_region.index = [unidecode.unidecode(x.upper()) for x in production_by_region.index]
 
-    # Fusion des données
     regions_gdata = regions_gdata.merge(production_by_region, left_on='nom', right_index=True, how='left')
 
-    # Création de la carte
     fig, ax = plt.subplots(figsize=(15, 10))
     regions_gdata.plot(
         column='Production (MW)',
@@ -95,7 +77,6 @@ def create_energy_production_map(data):
         missing_kwds={'color': 'lightgrey'}
     )
 
-    # Annotation des régions
     for idx, row in regions_gdata.iterrows():
         if row['Production (MW)'] > 0:
             centroid = row.geometry.centroid
@@ -114,49 +95,27 @@ def create_energy_production_map(data):
     plt.tight_layout()
     return fig
 
+# Graphique 2 : Série temporelle de production et consommation
 def create_time_series_plot(data):
-    # Vérifiez si la colonne 'Date' est présente
-    if 'Date' not in data.columns:
-        raise ValueError("La colonne 'Date' est manquante dans le DataFrame.")
-
-    # Conversion de la colonne 'Date' au format datetime
     data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
 
-    # Vérifiez si les colonnes de production sont présentes
     energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
                    'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
                    'Bioénergies (MW)']
 
-    missing_cols = [col for col in energy_cols if col not in data.columns]
-    if missing_cols:
-        raise ValueError(f"Les colonnes suivantes sont manquantes dans le DataFrame : {missing_cols}")
-
-    # Assurez-vous que toutes les colonnes d'énergie sont numériques
     for col in energy_cols:
         data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
 
-    # Calcul de la production totale d'électricité
     data['Production (MW)'] = data[energy_cols].sum(axis=1)
-    print("Premières lignes après calcul de la production :", data[['Date', 'Production (MW)']].head())
-
-    # Vérifiez si la colonne 'Consommation (MW)' est présente et numérisez-la
-    if 'Consommation (MW)' not in data.columns:
-        raise ValueError("La colonne 'Consommation (MW)' est manquante dans le DataFrame.")
 
     data['Consommation (MW)'] = pd.to_numeric(data['Consommation (MW)'], errors='coerce').fillna(0)
 
-    # Triez les données par date
-    data_sorted = data.sort_values('Date')
+    time_series = data.groupby('Date')[['Production (MW)', 'Consommation (MW)']].sum()
 
-    # Somme de la production et consommation par date
-    time_series = data_sorted.groupby('Date')[['Production (MW)', 'Consommation (MW)']].sum()
-
-    # Tracer les séries temporelles
     fig, ax = plt.subplots(figsize=(12, 6))
     time_series['Production (MW)'].plot(ax=ax, label='Production Totale (MW)', color='blue')
     time_series['Consommation (MW)'].plot(ax=ax, label='Consommation Totale (MW)', color='red')
 
-    # Ajouter les titres et légendes
     ax.set_title("Production et Consommation d'Électricité au Fil du Temps")
     ax.set_ylabel("Puissance (MW)")
     ax.set_xlabel("Date")
@@ -164,45 +123,54 @@ def create_time_series_plot(data):
     plt.tight_layout()
     return fig
 
-
-
-
-# Graphique 4 : Impact de la COVID-19 sur la production
+# Graphique 3 : Impact de la COVID-19
 def create_covid_impact_plot(data):
-    # Conversion de la colonne 'Date' au format datetime
     data['Date'] = pd.to_datetime(data['Date'], format='%Y-%m-%d', errors='coerce')
 
-    # Vérifiez si les colonnes de production sont présentes
     energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
                    'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
                    'Bioénergies (MW)']
 
-    missing_cols = [col for col in energy_cols if col not in data.columns]
-    if missing_cols:
-        raise ValueError(f"Les colonnes suivantes sont manquantes dans le DataFrame : {missing_cols}")
-
-    # Assurez-vous que toutes les colonnes d'énergie sont numériques
     for col in energy_cols:
         data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
 
-    # Calcul de la production totale d'électricité
     data['Production (MW)'] = data[energy_cols].sum(axis=1)
 
-    # Filtrer les données à partir de mars 2020
     covid_data = data[data['Date'] >= '2020-03-01']
-    covid_data_sorted = covid_data.sort_values('Date')
+    covid_time_series = covid_data.groupby('Date')[['Production (MW)', 'Consommation (MW)']].sum()
 
-    # Agréger les données
-    covid_time_series = covid_data_sorted.groupby('Date')[['Production (MW)', 'Consommation (MW)']].sum()
-
-    # Tracer les séries temporelles
     fig, ax = plt.subplots(figsize=(12, 6))
     covid_time_series['Production (MW)'].plot(ax=ax, label='Production Totale (MW)', color='blue')
     covid_time_series['Consommation (MW)'].plot(ax=ax, label='Consommation Totale (MW)', color='red')
+
     ax.set_title("Impact de la COVID-19 sur la Production d'Électricité")
     ax.set_ylabel("Puissance (MW)")
     ax.set_xlabel("Date")
     ax.legend()
+    plt.tight_layout()
+    return fig
+
+# Graphique 4 : Histogramme bimensuel
+def create_biweekly_histogram(data):
+    data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
+
+    energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
+                   'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
+                   'Bioénergies (MW)']
+
+    for col in energy_cols:
+        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
+
+    data['Production (MW)'] = data[energy_cols].sum(axis=1)
+    data['Consommation (MW)'] = pd.to_numeric(data['Consommation (MW)'], errors='coerce').fillna(0)
+
+    data.set_index('Date', inplace=True)
+    biweekly_data = data.resample('2M')[['Production (MW)', 'Consommation (MW)']].sum()
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    biweekly_data.plot(kind='bar', stacked=True, ax=ax, colormap='viridis')
+    ax.set_title("Production et Consommation d'Électricité Bimensuelle")
+    plt.xticks(rotation=45)
     plt.tight_layout()
     return fig
 
@@ -573,5 +541,4 @@ def main():
         st.write("Résumé des analyses et perspectives futures.")
 
 # Point d'entrée de l'application
-if __name__ == "__main__":
     main()
