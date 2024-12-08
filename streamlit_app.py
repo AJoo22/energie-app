@@ -1,376 +1,19 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import geopandas as gpd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import seaborn as sns
-import tempfile
-import os
-import requests
-import unidecode
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from scipy.stats import zscore
 
-# Charger les données
 @st.cache_data
-def load_data(lien_data, lien_geo):
-    data = pd.read_csv(lien_data, sep=";")
-    
-    response = requests.get(lien_geo)
-    temp_dir = tempfile.gettempdir()
-    temp_file = os.path.join(temp_dir, "regions.geojson")
-    with open(temp_file, 'wb') as f:
-        f.write(response.content)
-    
-    return data, temp_file 
-
-# Charger les liens
-url_data = "/content/drive/MyDrive/groupeDeTravail-BDAenergie/eco2mix-regional-cons-defcopiecopy.csv"
-url_geo = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/regions-version-simplifiee.geojson"
-
-data, geo = load_data(url_data, url_geo)
-
-# Fonction pour valider les colonnes
-def validate_columns(data, required_columns):
-    missing_cols = [col for col in required_columns if col not in data.columns]
-    if missing_cols:
-        raise ValueError(f"Les colonnes suivantes sont manquantes dans le DataFrame : {missing_cols}")
-
-# Graphique 1 : Carte de production d'électricité par région
-def create_energy_production_map(data):
-    energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
-                   'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
-                   'Bioénergies (MW)']
-
-    validate_columns(data, energy_cols + ['Région'])
-
-    for col in energy_cols:
-        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-
-    data['Production (MW)'] = data[energy_cols].sum(axis=1)
-    renewable_cols = ['Eolien (MW)', 'Solaire (MW)', 'Hydraulique (MW)', 'Bioénergies (MW)']
-    data['Renouvelable (MW)'] = data[renewable_cols].sum(axis=1)
-
-    production_by_region = data.groupby('Région')[['Production (MW)', 'Renouvelable (MW)']].sum()
-    production_by_region['Pourcentage Renouvelable'] = (
-        production_by_region['Renouvelable (MW)'] / production_by_region['Production (MW)'].replace(0, 1) * 100
-    )
-
-    regions_gdata = gpd.read_file(geo)
-    regions_gdata['nom'] = regions_gdata['nom'].str.upper().apply(lambda x: unidecode.unidecode(x))
-    production_by_region.index = [unidecode.unidecode(x.upper()) for x in production_by_region.index]
-
-    regions_gdata = regions_gdata.merge(production_by_region, left_on='nom', right_index=True, how='left')
-
-    fig, ax = plt.subplots(figsize=(15, 10))
-    regions_gdata.plot(
-        column='Production (MW)',
-        ax=ax,
-        legend=True,
-        legend_kwds={'label': 'Production Totale (MW)'},
-        cmap='YlOrRd',
-        missing_kwds={'color': 'lightgrey'}
-    )
-
-    for idx, row in regions_gdata.iterrows():
-        if row['Production (MW)'] > 0:
-            centroid = row.geometry.centroid
-            text = f"{row['nom']}\n{row['Production (MW)']/1000:,.1f} GW\n{row['Pourcentage Renouvelable']:.1f}% Ren."
-            ax.annotate(
-                text,
-                xy=(centroid.x, centroid.y),
-                horizontalalignment='center',
-                verticalalignment='center',
-                fontsize=8,
-                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1)
-            )
-
-    ax.set_title("Production d'Électricité par Région", fontsize=14, pad=20)
-    ax.axis('off')
-    plt.tight_layout()
-    return fig
-
-# Graphique 2 : Série temporelle de production et consommation
-def create_time_series_plot(data):
-    data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
-
-    energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
-                   'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
-                   'Bioénergies (MW)']
-
-    for col in energy_cols:
-        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-
-    data['Production (MW)'] = data[energy_cols].sum(axis=1)
-
-    data['Consommation (MW)'] = pd.to_numeric(data['Consommation (MW)'], errors='coerce').fillna(0)
-
-    time_series = data.groupby('Date')[['Production (MW)', 'Consommation (MW)']].sum()
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    time_series['Production (MW)'].plot(ax=ax, label='Production Totale (MW)', color='blue')
-    time_series['Consommation (MW)'].plot(ax=ax, label='Consommation Totale (MW)', color='red')
-
-    ax.set_title("Production et Consommation d'Électricité au Fil du Temps")
-    ax.set_ylabel("Puissance (MW)")
-    ax.set_xlabel("Date")
-    ax.legend()
-    plt.tight_layout()
-    return fig
-
-# Graphique 3 : Impact de la COVID-19
-def create_covid_impact_plot(data):
-    data['Date'] = pd.to_datetime(data['Date'], format='%Y-%m-%d', errors='coerce')
-
-    energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
-                   'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
-                   'Bioénergies (MW)']
-
-    for col in energy_cols:
-        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-
-    data['Production (MW)'] = data[energy_cols].sum(axis=1)
-
-    covid_data = data[data['Date'] >= '2020-03-01']
-    covid_time_series = covid_data.groupby('Date')[['Production (MW)', 'Consommation (MW)']].sum()
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    covid_time_series['Production (MW)'].plot(ax=ax, label='Production Totale (MW)', color='blue')
-    covid_time_series['Consommation (MW)'].plot(ax=ax, label='Consommation Totale (MW)', color='red')
-
-    ax.set_title("Impact de la COVID-19 sur la Production d'Électricité")
-    ax.set_ylabel("Puissance (MW)")
-    ax.set_xlabel("Date")
-    ax.legend()
-    plt.tight_layout()
-    return fig
-
-# Graphique 4 : Histogramme bimensuel
-def create_biweekly_histogram(data):
-    data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
-
-    energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
-                   'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
-                   'Bioénergies (MW)']
-
-    for col in energy_cols:
-        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-
-    data['Production (MW)'] = data[energy_cols].sum(axis=1)
-    data['Consommation (MW)'] = pd.to_numeric(data['Consommation (MW)'], errors='coerce').fillna(0)
-
-    data.set_index('Date', inplace=True)
-    biweekly_data = data.resample('2M')[['Production (MW)', 'Consommation (MW)']].sum()
-
-    fig, ax = plt.subplots(figsize=(14, 7))
-    biweekly_data.plot(kind='bar', stacked=True, ax=ax, colormap='viridis')
-    ax.set_title("Production et Consommation d'Électricité Bimensuelle")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    return fig
-
-
-# Graphique 5 : Histogramme de la Production et Consommation bimensuelle
-
-def create_biweekly_histogram(data):
-    # Conversion de la colonne 'Date' au format datetime avec un format explicite
-    data['Date'] = pd.to_datetime(data['Date'], format='%Y-%m-%d', errors='coerce')
-
-    # Vérifiez si les colonnes de production sont présentes
-    energy_cols = ['Thermique (MW)', 'Nucléaire (MW)', 'Eolien (MW)',
-                   'Solaire (MW)', 'Hydraulique (MW)', 'Pompage (MW)',
-                   'Bioénergies (MW)']
-
-    missing_cols = [col for col in energy_cols if col not in data.columns]
-    if missing_cols:
-        raise ValueError(f"Les colonnes suivantes sont manquantes dans le DataFrame : {missing_cols}")
-
-    # Assurez-vous que toutes les colonnes d'énergie sont numériques
-    for col in energy_cols:
-        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-
-    # Calcul de la production totale d'électricité
-    data['Production (MW)'] = data[energy_cols].sum(axis=1)
-
-    # Vérifiez si la colonne 'Consommation (MW)' est présente
-    if 'Consommation (MW)' not in data.columns:
-        raise ValueError("La colonne 'Consommation (MW)' est manquante dans le DataFrame.")
-
-    # Filtrer les données à partir de 2013
-    data = data[data['Date'] >= '2013-01-01']
-
-    # Définir 'Date' comme index pour le regroupement
-    data.set_index('Date', inplace=True)
-
-    # Regrouper les données par période de deux mois (bimensuel) et sommer
-    biweekly_data = data.resample('2M')[['Production (MW)', 'Consommation (MW)']].sum()
-
-    # Tracer l'histogramme empilé
-    fig, ax = plt.subplots(figsize=(14, 7))
-
-    # Tracer la production et la consommation empilées
-    biweekly_data.plot(kind='bar', stacked=True, ax=ax, colormap='viridis')
-
-    # Formater l'axe x pour afficher les dates au format 'YYYY-MM-DD'
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))  # Afficher une étiquette tous les deux mois
-    plt.xticks(rotation=45)  # Rotation pour améliorer la lisibilité
-
-    # Ajouter un titre et des labels
-    ax.set_title("Production et Consommation d'Électricité Bimensuelle")
-    ax.set_ylabel("Puissance (MW)")
-    ax.set_xlabel("Période Bimensuelle")
-
-    # Retourner la figure
-    return fig
-
-# Graphique 6 : Répartition globale du TCH
-def graphique_6(data):
-        # Calculer la somme des TCH par source d'énergie
-        total_TCH_france_metro_hors_corse = data[['TCH Thermique (%)', 'TCH Nucléaire (%)',
-                                                'TCH Eolien (%)', 'TCH Hydraulique (%)',
-                                                'TCH Solaire (%)', 'TCH Bioénergies (%)']].sum()
-
-# Afficher la somme des TCH sous forme de tableau
-        st.subheader("Somme des Taux de Charge (TCH) par Source d'Énergie")
-        st.dataframe(total_TCH_france_metro_hors_corse)
-
-        # Tracer le graphique circulaire
-        st.subheader("Graphique Circulaire de la Répartition des TCH")
-        fig, ax = plt.subplots(figsize=(8, 8))
-
-        ax.pie(total_TCH_france_metro_hors_corse,
-               labels=total_TCH_france_metro_hors_corse.index,  # Labels issus des colonnes
-               autopct='%1.0f%%',  # Afficher les pourcentages
-               startangle=140)
-
-        ax.set_title("Répartition du Taux de Charge (TCH) par Source d'Énergie")
-        ax.legend(fontsize=8, loc="upper right")
-        return fig
-
-# Graphique 7 : Répartition globale du TCO
-
-def graphique_7(data):
-    # Vérifier que toutes les colonnes nécessaires existent dans le DataFrame
-    required_cols = ['TCO Thermique (%)', 'TCO Nucléaire (%)',
-                    'TCO Eolien (%)', 'TCO Hydraulique (%)',
-                    'TCO Solaire (%)', 'TCO Bioénergies (%)']
-
-    missing_cols = [col for col in required_cols if col not in data.columns]
-    if missing_cols:
-        raise ValueError(f"Les colonnes suivantes sont manquantes dans le DataFrame : {missing_cols}")
-
-    # Calculer la somme des TCH par source d'énergie
-    total_TCH_france_metro_hors_corse = data[required_cols].sum()
-
-    # Afficher la somme des TCH sous forme de tableau
-    st.subheader("Somme des Taux de Charge (TCO) par Source d'Énergie")
-    st.dataframe(total_TCH_france_metro_hors_corse)
-
-    # Tracer le graphique circulaire
-    st.subheader("Graphique Circulaire de la Répartition du TCO")
-    fig, ax = plt.subplots(figsize=(8, 8))
-
-    ax.pie(total_TCH_france_metro_hors_corse,
-           labels=total_TCH_france_metro_hors_corse.index,  # Labels issus des colonnes
-           autopct='%1.0f%%',  # Afficher les pourcentages
-           startangle=140)
-
-    ax.set_title("Répartition du Taux de Charge (TCO) par Source d'Énergie")
-    ax.legend(fontsize=8, loc="upper right")
-
-
-
-    return fig
-
-
-def graphique_8(data):
-    # Remplacer les valeurs manquantes par 0
-    cols_to_fill = [
-        'Consommation (MW)', 'Thermique (MW)', 'Nucléaire (MW)',
-        'Eolien (MW)', 'Solaire (MW)', 'Hydraulique (MW)',
-        'Pompage (MW)', 'Bioénergies (MW)'
-    ]
-    for col in cols_to_fill:
-        if col in data.columns:
-            if col == 'Eolien (MW)':
-                data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-            else:
-                data[col] = data[col].fillna(0)
-
-    # Calcul de la consommation totale par région
-    if 'Région' in data.columns:
-        consumption_by_region = data.groupby('Région')['Consommation (MW)'].sum().sort_values(ascending=False)
-
-        # Affichage des données sous forme de tableau
-        st.subheader("Consommation d'Électricité par Région")
-        st.dataframe(consumption_by_region)
-
-        # Afficher un graphique de la consommation par région
-        st.subheader("Graphique : Consommation d'Électricité par Région")
-        fig, ax = plt.subplots(figsize=(14, 7))
-        consumption_by_region.plot(kind='bar', color='orange', ax=ax)
-        ax.set_title("Consommation d'Électricité par Région")
-        ax.set_xlabel("Région")
-        ax.set_ylabel("Consommation (MW)")
-        ax.grid(axis='y')
-        plt.tight_layout()
-        return fig
-
-def graphique_9(data):
-    # Convertir la colonne "Eolien (MW)" en numérique
-    data['Eolien (MW)'] = pd.to_numeric(data['Eolien (MW)'], errors='coerce').fillna(0)
-
-    # Liste des colonnes à utiliser
-    cols_to_fill = [
-        'Consommation (MW)', 'Thermique (MW)', 'Nucléaire (MW)',
-        'Eolien (MW)', 'Solaire (MW)', 'Hydraulique (MW)',
-        'Pompage (MW)', 'Bioénergies (MW)'
-    ]
-
-    # Calcul de la production totale
-    data['Production (MW)'] = data[cols_to_fill].sum(axis=1)
-
-    # Groupement des données par région et somme des productions par type
-    production_by_region = data.groupby('Région')[cols_to_fill].sum()
-
-    # Ajout d'une colonne pour la production totale par région
-    production_by_region['Production Totale'] = production_by_region.sum(axis=1)
-
-    # Trier les régions par production totale
-    sorted_values_production_by_region = production_by_region.sort_values(by='Production Totale', ascending=False)
-
-    # Supprimer la colonne "Production Totale" pour le graphique
-    sorted_values_production_by_region_plot = sorted_values_production_by_region.drop(columns=['Production Totale'])
-
-    # Affichage des données
-    st.subheader("Production par Région")
-    st.dataframe(production_by_region)
-
-    # Afficher un histogramme empilé des productions par source et par région
-    st.subheader("Graphique : Production d'Électricité par Source et par Région")
-    fig, ax = plt.subplots(figsize=(14, 7))
-    sorted_values_production_by_region_plot.plot(kind='bar', stacked=True, ax=ax)
-    plt.title("Production d'Électricité par Source et par Région")
-    plt.ylabel("Production (MW)")
-    plt.xlabel("Régions")
-
-    return fig
+def load_data(data_url="/content/drive/MyDrive/groupeDeTravail-BDAenergie/eco2mix-regional-cons-defcopiecopy.csv"):
+    # Charger les données
+    data = pd.read_csv(data_url, sep=";")
+    return data
 
 def main():
-    # Configuration de l'application
-    st.set_page_config(page_title="Eco2Mix Dashboard", layout="wide")
-
-    # Charger les données
-    data = load_data()
+    # Chargement des données
+    data_url = "/content/drive/MyDrive/groupeDeTravail-BDAenergie/eco2mix-regional-cons-defcopiecopy.csv"
+    data = load_data(data_url)
 
     # Pages disponibles
-    pages = ["Accueil", "Présentation", "Préprocessing", "Graphiques", "Prédictions", "Conclusion"]
+    pages = ["Accueil", "Présentation", "Préprocessing", "Graphiques", "Modélisations", "Conclusion"]
     selected_page = st.sidebar.selectbox("Navigation", pages)
 
     # Page d'Accueil
@@ -378,7 +21,7 @@ def main():
         st.title("RAPPORT SUR LA CONSOMMATION ET LA PRODUCTION D'ÉNERGIE EN FRANCE")
         st.markdown("<h2 style='font-size: 28px; font-weight: bold;'>Étude sur la production et la consommation d'électricité</h2>", unsafe_allow_html=True)
         st.write("en France métropolitaine de janvier 2013 à septembre 2024")
-        st.image("https://storage.letudiant.fr/mediatheque/letudiant/7/8/2635278-differentes-sources-energie-766x438.jpeg")
+        st.image("https://storage.letudiant.fr/mediatheque/letudiant/7/8/2635278-differentes-sources-energie-766x438.jpeg", use_container_width=True)
 
         st.markdown("<h2 style='font-size: 28px; font-weight: bold;'>Membres du Projet :</h2>", unsafe_allow_html=True)
         st.write("JALILI Amine")
@@ -388,7 +31,6 @@ def main():
 
         st.markdown("<h2 style='font-size: 28px; font-weight: bold;'>Mentor :</h2>", unsafe_allow_html=True)
         st.write("Alain Ferlac")
-
 
     # Page de Présentation
     elif selected_page == "Présentation":
@@ -427,7 +69,6 @@ def main():
         - Effectuer des **analyses comparatives** entre régions pour comprendre les dynamiques énergétiques.
         """)
 
-
     # Page de Préprocessing
     elif selected_page == "Préprocessing":
         st.title("Préprocessing")
@@ -462,41 +103,25 @@ def main():
             "Histogramme de la Production et Consommation bimensuelle",
             "Répartition globale du TCH",
             "Répartition globale du TCO",
-            "Consommation d'Électricité par Région",
-            "Production des Énergies par Région",
+            "Consommation d'Électricité par Région"
         ]
+
+        image_paths = {
+            "Production d'électricité par Région": "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Dossier sans titre/Production d'Electricité par Région.png",
+            "Production et Consommation d'électricité au fil du temps": "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Dossier sans titre/Production et Consommation d'électricité au fil du temps (1).png",
+            "Impact de la COVID-19 sur la production": "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Dossier sans titre/Production et Consommation d'électricité pendant la période de la COVID-19 et la reprise.png",
+            "Histogramme de la Production et Consommation bimensuelle": "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Dossier sans titre/Histogramme de la Production et Consommation d'Électricité tous les 2 mois.png",
+            "Répartition globale du TCH": "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Dossier sans titre/Répartition du taux de charge (TCH) par sources d'énergie en France Métropolitaine.png",
+            "Répartition globale du TCO": "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Dossier sans titre/Répartition du taux de couverture (TCO) par sources d'énergie en France Métropolitaine.png",
+            "Consommation d'Électricité par Région": "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Dossier sans titre/Consommation d'Electricité par Région.png"
+        }
+
         choix_graphique = st.selectbox("Choisissez un graphique", graphiques)
 
-        # Ajouter des try-except blocks pour chaque graphique
-        try:
-            if choix_graphique == graphiques[0]:
-                fig = create_energy_production_map(data)
-                st.pyplot(fig)
-            elif choix_graphique == graphiques[1]:
-                fig = create_time_series_plot(data)
-                st.pyplot(fig)
-            elif choix_graphique == graphiques[2]:
-                fig = create_covid_impact_plot(data)
-                st.pyplot(fig)
-            elif choix_graphique == graphiques[3]:
-                fig = create_biweekly_histogram(data)
-                st.pyplot(fig)
-            elif choix_graphique == graphiques[4]:
-                fig = graphique_6(data)
-                st.pyplot(fig)
-            elif choix_graphique == graphiques[5]:
-                fig = graphique_7(data)
-                st.pyplot(fig)
-            elif choix_graphique == graphiques[6]:
-                fig = graphique_8(data)
-                st.pyplot(fig)
-            elif choix_graphique == graphiques[7]:
-                fig = graphique_9(data)
-                st.pyplot(fig)
-        except Exception as e:
-            st.error(f"Erreur lors de la génération du graphique : {e}")
+        if choix_graphique in image_paths:
+            st.image(image_paths[choix_graphique], caption=choix_graphique, use_container_width=True)
 
-    # Page de Prédictions
+    # Page de Modélisations
     elif selected_page == "Modélisations":
         st.title("Modélisations")
         st.write("Section de prédictions basée sur des modèles de machine learning.")
@@ -518,15 +143,15 @@ def main():
 
         # Dictionnaire des liens vers les images
         images = {
-            'Boxplot': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_1",
-            'Performance des modèles': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_2",
-            'Graphique de corrélation': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_3",
-            'Régression Linéaire': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_4",
-            'Régression Ridge': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_5",
-            'Régression Lasso': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_6",
-            'Arbre de Décision': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_7",
-            'Forêt Aléatoire': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_8",
-            'Régression : Île-de-France': "https://drive.google.com/uc?export=view&id=YOUR_IMAGE_ID_9",
+            'Boxplot': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Boxplot de consomation.png",
+            'Performance des modèles': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Perforamance des modèles.png",
+            'Graphique de corrélation': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Graphique de corrélation.png",
+            'Régression Linéaire': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Régresionn liéaire.png",
+            'Régression Ridge': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Régression de Ridge.png",
+            'Régression Lasso': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Régression Lasso.png",
+            'Arbre de Décision': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Arbre de décision.png",
+            'Forêt Aléatoire': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Modèle foret aléatoire.png",
+            'Régression : Île-de-France': "/content/drive/MyDrive/groupeDeTravail-BDAenergie/Régression ile de France.png",
         }
 
         # Affichage de l'image correspondant à l'option sélectionnée
@@ -535,10 +160,15 @@ def main():
         else:
             st.warning("Aucune image disponible pour cette sélection.")
 
-    # Page de conclusion
+    # Page de Conclusion
     elif selected_page == "Conclusion":
         st.title("Conclusion")
-        st.write("Résumé des analyses et perspectives futures.")
+        st.markdown("""
+        - 🔍 L'étude a permis d'analyser la consommation et la production d'énergie en France.
+        - 🌳 Les énergies renouvelables représentent une part significative mais variable selon les régions.
+        - 🔮 Perspectives futures : renforcer l'indépendance énergétique et investir dans les infrastructures.
+        """)
 
 # Point d'entrée de l'application
+if __name__ == "__main__":
     main()
